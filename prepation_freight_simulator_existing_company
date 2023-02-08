@@ -1,0 +1,194 @@
+WITH entregas AS (
+  SELECT 
+    k.pacote_id,
+    k.shipping_company AS current_shipping_company,
+    CAST(REGEXP_REPLACE(CAST(k.cep AS STRING), r"[^0-9]", "") AS INT64) AS cep,
+    UPPER(k.state) AS state,
+    REGEXP_REPLACE(NORMALIZE(UPPER(k.city), NFD), r"\pM", '') AS city,
+    k.weight,
+    k.price AS current_price,
+    k.delivery_time AS current_delivery_time
+
+  FROM `simulador_de_cotacao.entregas_mes_anterior` AS k
+), -- entregas no mês anterior 
+
+quotation AS (
+  SELECT 
+    s.transportadora AS quotation_shipping_company,
+    s.valor AS quotation_price,
+    UPPER(s.estado) AS quotation_state,
+    REGEXP_REPLACE(NORMALIZE(UPPER(s.cidade), NFD), r"\pM", '') AS quotation_city,
+    REGEXP_REPLACE(CAST(s.cep_inicial AS STRING), r"[^0-9]", "") AS quotation_initial_zip_code,
+    REGEXP_REPLACE(CAST(s.cep_final AS STRING), r"[^0-9]", "") AS quotation_final_zip_code,
+    (s.limite_inferior * 1000) AS quotation_lower_weight_limit,
+    (s.limite_superior * 1000) AS quotation_upper_weight_limit,
+    s.prazo_entrega AS quotation_delivery_time
+
+  FROM `simulador_de_cotacao.quote_for_exist_shipping_company` AS s
+), -- planilha com as novas cotações enviada pela nova transportadora
+
+quotation_adjusted AS (
+  SELECT
+    quotation_shipping_company,
+    quotation_state,
+    quotation_city,
+    quotation_lower_weight_limit,
+    quotation_upper_weight_limit,
+    CAST(quotation_initial_zip_code AS INT64) AS quotation_initial_zip_code,
+    CAST(quotation_final_zip_code AS INT64) AS quotation_final_zip_code,
+    quotation_delivery_time,
+    quotation_price
+
+  FROM quotation
+), -- transformando o cep da planilha de cotações para inteiro
+
+quotation_with_category AS (
+  SELECT 
+    *,
+    CASE 
+      WHEN quotation_upper_weight_limit <= 600 THEN "A"
+      WHEN quotation_upper_weight_limit > 600 AND quotation_upper_weight_limit <= 999 THEN "B"
+      WHEN quotation_upper_weight_limit > 999 AND quotation_upper_weight_limit <= 1500 THEN "C"
+      WHEN quotation_upper_weight_limit > 1500 THEN "D"
+    END AS quotation_weight_category
+
+  FROM quotation_adjusted
+), -- query final das novas cotações com categoria de peso (criado para diminuir o tempo de execução dos próximos joins)
+
+-- union de todas as categorias de peso
+-- foi separado por categorias para que o consumo de tempo fosse menor e a query rodasse sem problema
+-- ao final, faz o union das entregas que não tem peso associado, portanto não puderam ser atribuídas
+
+final AS (
+  SELECT 
+    k.pacote_id,
+    k.current_shipping_company,
+    k.cep,
+    k.state,
+    k.city,
+    k.weight,
+    k.current_price,
+    k.current_delivery_time,
+    s.quotation_shipping_company,
+    s.quotation_price,
+    s.quotation_state,
+    s.quotation_city,
+    s.quotation_initial_zip_code,
+    s.quotation_final_zip_code,
+    s.quotation_lower_weight_limit,
+    s.quotation_upper_weight_limit,
+    s.quotation_delivery_time,
+    CASE WHEN s.quotation_price < k.current_price THEN TRUE ELSE FALSE END AS changed_by_quotation
+
+  FROM entregas AS k
+  LEFT JOIN quotation_with_category AS s
+  ON (k.cep BETWEEN s.quotation_initial_zip_code AND s.quotation_final_zip_code)
+  AND (k.weight BETWEEN s.quotation_lower_weight_limit AND s.quotation_upper_weight_limit)
+  AND s.quotation_weight_category = "A"
+
+  WHERE k.weight <= 600
+
+  UNION ALL
+
+  SELECT 
+    k.pacote_id,
+    k.current_shipping_company,
+    k.cep,
+    k.state,
+    k.city,
+    k.weight,
+    k.current_price,
+    k.current_delivery_time,
+    s.quotation_shipping_company,
+    s.quotation_price,
+    s.quotation_state,
+    s.quotation_city,
+    s.quotation_initial_zip_code,
+    s.quotation_final_zip_code,
+    s.quotation_lower_weight_limit,
+    s.quotation_upper_weight_limit,
+    s.quotation_delivery_time,
+    CASE WHEN s.quotation_price < k.current_price THEN TRUE ELSE FALSE END AS changed_by_quotation
+
+  FROM entregas AS k
+  LEFT JOIN quotation_with_category AS s
+  ON (k.cep BETWEEN s.quotation_initial_zip_code AND s.quotation_final_zip_code)
+  AND (k.weight BETWEEN s.quotation_lower_weight_limit AND s.quotation_upper_weight_limit)
+  AND s.quotation_weight_category = "B"
+
+  WHERE k.weight > 600 AND k.weight <= 999
+
+  UNION ALL
+
+  SELECT 
+    k.pacote_id,
+    k.current_shipping_company,
+    k.cep,
+    k.state,
+    k.city,
+    k.weight,
+    k.current_price,
+    k.current_delivery_time,
+    s.quotation_shipping_company,
+    s.quotation_price,
+    s.quotation_state,
+    s.quotation_city,
+    s.quotation_initial_zip_code,
+    s.quotation_final_zip_code,
+    s.quotation_lower_weight_limit,
+    s.quotation_upper_weight_limit,
+    s.quotation_delivery_time,
+    CASE WHEN s.quotation_price < k.current_price THEN TRUE ELSE FALSE END AS changed_by_quotation
+
+  FROM entregas AS k
+  LEFT JOIN quotation_with_category AS s
+  ON (k.cep BETWEEN s.quotation_initial_zip_code AND s.quotation_final_zip_code)
+  AND (k.weight BETWEEN s.quotation_lower_weight_limit AND s.quotation_upper_weight_limit)
+  AND s.quotation_weight_category = "C"
+
+  WHERE k.weight > 999 AND k.weight <= 1500
+
+  UNION ALL
+
+  SELECT 
+    k.pacote_id,
+    k.current_shipping_company,
+    k.cep,
+    k.state,
+    k.city,
+    k.weight,
+    k.current_price,
+    k.current_delivery_time,
+    s.quotation_shipping_company,
+    s.quotation_price,
+    s.quotation_state,
+    s.quotation_city,
+    s.quotation_initial_zip_code,
+    s.quotation_final_zip_code,
+    s.quotation_lower_weight_limit,
+    s.quotation_upper_weight_limit,
+    s.quotation_delivery_time,
+    CASE WHEN s.quotation_price < k.current_price THEN TRUE ELSE FALSE END AS changed_by_quotation
+
+  FROM entregas AS k
+  LEFT JOIN quotation_with_category AS s
+  ON (k.cep BETWEEN s.quotation_initial_zip_code AND s.quotation_final_zip_code)
+  AND (k.weight BETWEEN s.quotation_lower_weight_limit AND s.quotation_upper_weight_limit)
+  AND s.quotation_weight_category = "D"
+
+  WHERE k.weight > 1500
+), -- atribuição da cotação nas entregas que consegue atuar
+
+shipping_company_without_change AS (
+  SELECT DISTINCT current_shipping_company
+  FROM final
+  WHERE changed_by_quotation IS TRUE
+)
+
+SELECT 
+  f.*, 
+  CASE WHEN s.current_shipping_company IS NOT NULL THEN TRUE ELSE FALSE END current_shipping_company_had_changed
+
+FROM final AS f
+LEFT JOIN shipping_company_without_change AS s
+ON f.current_shipping_company = s.current_shipping_company
