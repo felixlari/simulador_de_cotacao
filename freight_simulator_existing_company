@@ -87,7 +87,7 @@ new_shipping_price AS (
 
 attribution_new_shipping_company AS (
   SELECT 
-    k.kit_id,
+    k.pacote_id,
     k.current_shipping_company,
     k.cep,
     k.state,
@@ -125,7 +125,7 @@ attribution_new_shipping_company AS (
   UNION ALL 
 
   SELECT 
-    k.kit_id,
+    k.pacote_id,
     k.current_shipping_company,
     k.cep,
     k.state,
@@ -164,7 +164,7 @@ attribution_new_shipping_company AS (
   UNION ALL 
 
   SELECT 
-    k.kit_id,
+    k.pacote_id,
     k.current_shipping_company,
     k.cep,
     k.state,
@@ -203,7 +203,7 @@ attribution_new_shipping_company AS (
   UNION ALL 
 
   SELECT 
-    k.kit_id,
+    k.pacote_id,
     k.current_shipping_company,
     k.cep,
     k.state,
@@ -246,7 +246,7 @@ is_quotation_shipping_company AS (
 
 union_bases AS (
   SELECT 
-    kit_id,
+    pacote_id,
     current_shipping_company,
     cep,
     state,
@@ -285,7 +285,7 @@ union_bases AS (
   UNION ALL
 
   SELECT 
-    kit_id,
+    pacote_id,
     current_shipping_company,
     cep,
     state,
