@@ -1,0 +1,2 @@
+SELECT *
+FROM `simulador_de_cotacao.freight_quote_for_exist_shipping_company`
