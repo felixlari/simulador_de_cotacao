@@ -1,0 +1,331 @@
+WITH same_shipping_company_without_change AS (
+  SELECT *
+  FROM `simulador_de_cotacao.prepation_freight_simulator_existing_company`
+
+  WHERE (current_shipping_company = quotation_shipping_company AND current_price < quotation_price)
+  OR (current_shipping_company IN (SELECT DISTINCT quotation_shipping_company FROM `simulador_de_cotacao.prepation_freight_simulator_existing_company` WHERE quotation_shipping_company IS NOT NULL)
+    AND quotation_shipping_company IS NULL)
+), -- para os casos que a empresa cotada mandou uma nova cotação com o valor acima do que ela praticou no mês anterior
+-- ou no caso da nova cotação não atender nas entregas antes efetuadas por ela 
+-- então deverá nesses casos consultar a shipping price e pegar a transportadora com melhor cotação
+
+quotation AS (
+  SELECT 
+    s.transportadora AS quotation_shipping_company,
+    s.valor AS quotation_price,
+    UPPER(s.estado) AS quotation_state,
+    REGEXP_REPLACE(NORMALIZE(UPPER(s.cidade), NFD), r"\pM", '') AS quotation_city,
+    REGEXP_REPLACE(CAST(s.cep_inicial AS STRING), r"[^0-9]", "") AS quotation_initial_zip_code,
+    REGEXP_REPLACE(CAST(s.cep_final AS STRING), r"[^0-9]", "") AS quotation_final_zip_code,
+    (s.limite_inferior * 1000) AS quotation_lower_weight_limit,
+    (s.limite_superior * 1000) AS quotation_upper_weight_limit,
+    s.prazo_entrega AS quotation_delivery_time
+
+  FROM `simulador_de_cotacao.quote_for_exist_shipping_company` AS s
+), -- planilha com as novas cotações enviada pela nova transportadora
+
+quotation_adjusted AS (
+  SELECT
+    quotation_shipping_company,
+    quotation_state,
+    quotation_city,
+    quotation_lower_weight_limit,
+    quotation_upper_weight_limit,
+    CAST(quotation_initial_zip_code AS INT64) AS quotation_initial_zip_code,
+    CAST(quotation_final_zip_code AS INT64) AS quotation_final_zip_code,
+    quotation_delivery_time,
+    quotation_price
+
+  FROM quotation
+), -- transformando o cep da planilha de cotações para inteiro
+
+new_shipping_price AS (
+  SELECT 
+    shipping_company,
+    NULL AS state, -- na shipping price não tem info de estado
+    NULL AS city, -- na shipping price não tem info de cidade
+    min_weight,
+    max_weight,
+    min_zipcode,
+    max_zipcode,
+    delivery_time,
+    price,
+    CASE 
+      WHEN max_weight <= 600 THEN "A"
+      WHEN max_weight > 600 AND max_weight <= 999 THEN "B"
+      WHEN max_weight > 999 AND max_weight <= 1500 THEN "C"
+      WHEN max_weight > 1500 THEN "D"
+    END AS weight_category
+
+  FROM  `simulador_de_cotacao.shipping_pricing`
+  WHERE shipping_company NOT IN (SELECT DISTINCT current_shipping_company FROM same_shipping_company_without_change)
+  
+  UNION ALL
+
+  SELECT
+    quotation_shipping_company AS shipping_company,
+    quotation_state AS state, -- na planilha recebida de cotação tem info de estado
+    quotation_city AS city, -- na planilha recebida de cotação tem info de cidade
+    quotation_lower_weight_limit AS min_weight,
+    quotation_upper_weight_limit AS max_weight,
+    quotation_initial_zip_code AS min_zipcode,
+    quotation_final_zip_code AS max_zipcode,
+    quotation_delivery_time AS delivery_time,
+    quotation_price AS price,
+    CASE 
+      WHEN quotation_upper_weight_limit <= 600 THEN "A"
+      WHEN quotation_upper_weight_limit > 600 AND quotation_upper_weight_limit <= 999 THEN "B"
+      WHEN quotation_upper_weight_limit > 999 AND quotation_upper_weight_limit <= 1500 THEN "C"
+      WHEN quotation_upper_weight_limit > 1500 THEN "D"
+    END AS weight_category
+
+  FROM quotation_adjusted
+), -- excluindo linhas da empresa cotada e adicionando as novas cotações recebidas com categoria de peso (criado para diminuir o tempo de execução dos próximos joins)
+
+-- union de todas as categorias de peso
+-- foi separado por categorias para que o consumo de tempo fosse menor e a query rodasse sem problema
+
+attribution_new_shipping_company AS (
+  SELECT 
+    k.kit_id,
+    k.current_shipping_company,
+    k.cep,
+    k.state,
+    k.city,
+    k.weight,
+    k.current_price,
+    k.current_delivery_time,
+    k.quotation_shipping_company,
+    k.quotation_lower_weight_limit,
+    k.quotation_upper_weight_limit,
+    k.quotation_initial_zip_code,
+    k.quotation_final_zip_code,
+    k.quotation_delivery_time,
+    k.quotation_price,
+    k.quotation_state,
+    k.quotation_city,
+    p.shipping_company AS first_option_shipping_company,
+    p.min_weight AS first_option_lower_weight_limit,
+    p.max_weight AS first_option_upper_weight_limit,
+    p.min_zipcode AS first_option_initial_zip_code,
+    p.max_zipcode AS first_option_final_zip_code,
+    p.delivery_time AS first_option_delivery_time,
+    p.price AS first_option_price,
+    p.state AS first_option_state,
+    p.city AS first_option_city
+
+  FROM same_shipping_company_without_change AS k
+  LEFT JOIN new_shipping_price AS p
+  ON (k.cep BETWEEN p.min_zipcode AND p.max_zipcode)
+  AND (k.weight BETWEEN p.min_weight AND p.max_weight)
+  AND p.weight_category = "A"
+
+  WHERE k.weight <= 600
+
+  UNION ALL 
+
+  SELECT 
+    k.kit_id,
+    k.current_shipping_company,
+    k.cep,
+    k.state,
+    k.city,
+    k.weight,
+    k.current_price,
+    k.current_delivery_time,
+    k.quotation_shipping_company,
+    k.quotation_lower_weight_limit,
+    k.quotation_upper_weight_limit,
+    k.quotation_initial_zip_code,
+    k.quotation_final_zip_code,
+    k.quotation_delivery_time,
+    k.quotation_price,
+    k.quotation_state,
+    k.quotation_city,
+    p.shipping_company AS first_option_shipping_company,
+    p.min_weight AS first_option_lower_weight_limit,
+    p.max_weight AS first_option_upper_weight_limit,
+    p.min_zipcode AS first_option_initial_zip_code,
+    p.max_zipcode AS first_option_final_zip_code,
+    p.delivery_time AS first_option_delivery_time,
+    p.price AS first_option_price,
+    p.state AS first_option_state,
+    p.city AS first_option_city
+
+  FROM same_shipping_company_without_change AS k
+  LEFT JOIN new_shipping_price AS p
+  ON (k.cep BETWEEN p.min_zipcode AND p.max_zipcode)
+  AND (k.weight BETWEEN p.min_weight AND p.max_weight)
+  AND p.weight_category = "B"
+
+  WHERE k.weight > 600 
+  AND k.weight <= 999
+
+  UNION ALL 
+
+  SELECT 
+    k.kit_id,
+    k.current_shipping_company,
+    k.cep,
+    k.state,
+    k.city,
+    k.weight,
+    k.current_price,
+    k.current_delivery_time,
+    k.quotation_shipping_company,
+    k.quotation_lower_weight_limit,
+    k.quotation_upper_weight_limit,
+    k.quotation_initial_zip_code,
+    k.quotation_final_zip_code,
+    k.quotation_delivery_time,
+    k.quotation_price,
+    k.quotation_state,
+    k.quotation_city,
+    p.shipping_company AS first_option_shipping_company,
+    p.min_weight AS first_option_lower_weight_limit,
+    p.max_weight AS first_option_upper_weight_limit,
+    p.min_zipcode AS first_option_initial_zip_code,
+    p.max_zipcode AS first_option_final_zip_code,
+    p.delivery_time AS first_option_delivery_time,
+    p.price AS first_option_price,
+    p.state AS first_option_state,
+    p.city AS first_option_city
+
+  FROM same_shipping_company_without_change AS k
+  LEFT JOIN new_shipping_price AS p
+  ON (k.cep BETWEEN p.min_zipcode AND p.max_zipcode)
+  AND (k.weight BETWEEN p.min_weight AND p.max_weight)
+  AND p.weight_category = "C"
+
+  WHERE k.weight > 999 
+  AND k.weight <= 1500
+
+  UNION ALL 
+
+  SELECT 
+    k.kit_id,
+    k.current_shipping_company,
+    k.cep,
+    k.state,
+    k.city,
+    k.weight,
+    k.current_price,
+    k.current_delivery_time,
+    k.quotation_shipping_company,
+    k.quotation_lower_weight_limit,
+    k.quotation_upper_weight_limit,
+    k.quotation_initial_zip_code,
+    k.quotation_final_zip_code,
+    k.quotation_delivery_time,
+    k.quotation_price,
+    k.quotation_state,
+    k.quotation_city,
+    p.shipping_company AS first_option_shipping_company,
+    p.min_weight AS first_option_lower_weight_limit,
+    p.max_weight AS first_option_upper_weight_limit,
+    p.min_zipcode AS first_option_initial_zip_code,
+    p.max_zipcode AS first_option_final_zip_code,
+    p.delivery_time AS first_option_delivery_time,
+    p.price AS first_option_price,
+    p.state AS first_option_state,
+    p.city AS first_option_city
+
+  FROM same_shipping_company_without_change AS k
+  LEFT JOIN new_shipping_price AS p
+  ON (k.cep BETWEEN p.min_zipcode AND p.max_zipcode)
+  AND (k.weight BETWEEN p.min_weight AND p.max_weight)
+  AND p.weight_category = "D"
+
+  WHERE k.weight > 1500
+),
+
+is_quotation_shipping_company AS (
+  SELECT DISTINCT quotation_shipping_company AS shipping_company_in_plan
+  FROM quotation_adjusted
+), -- lista das empresas que estão na planilha de cotação
+
+union_bases AS (
+  SELECT 
+    kit_id,
+    current_shipping_company,
+    cep,
+    state,
+    city,
+    weight,
+    current_price,
+    current_delivery_time,
+    quotation_shipping_company,
+    quotation_price,
+    quotation_state,
+    quotation_city,
+    quotation_initial_zip_code,
+    quotation_final_zip_code,
+    quotation_lower_weight_limit,
+    quotation_upper_weight_limit,
+    quotation_delivery_time,
+    first_option_shipping_company,
+    first_option_lower_weight_limit,
+    first_option_upper_weight_limit,
+    first_option_initial_zip_code,
+    first_option_final_zip_code,
+    first_option_delivery_time,
+    first_option_price,
+    first_option_state,
+    first_option_city,
+    FALSE AS changed_by_quotation, -- campo destinado a entender se o valor praticado é menor que o valor recebido na cotação
+    CASE WHEN current_shipping_company = quotation_shipping_company THEN FALSE ELSE TRUE END AS current_shipping_company_had_changed,
+    CASE WHEN shipping_company_in_plan IS NULL THEN FALSE ELSE TRUE END AS is_quotation_shipping_company
+
+  FROM attribution_new_shipping_company
+  LEFT JOIN is_quotation_shipping_company
+  ON current_shipping_company = shipping_company_in_plan
+  -- escolhendo a transportadora com melhor valor para os casos tratados, onde, 
+  -- a empresa cotada mandou uma nova cotação com o valor acima do que ela praticou no mês anterior
+
+  UNION ALL
+
+  SELECT 
+    kit_id,
+    current_shipping_company,
+    cep,
+    state,
+    city,
+    weight,
+    current_price,
+    current_delivery_time,
+    quotation_shipping_company,
+    quotation_price,
+    quotation_state,
+    quotation_city,
+    quotation_initial_zip_code,
+    quotation_final_zip_code,
+    quotation_lower_weight_limit,
+    quotation_upper_weight_limit,
+    quotation_delivery_time,
+    NULL AS first_option_shipping_company,
+    NULL AS first_option_lower_weight_limit,
+    NULL AS first_option_upper_weight_limit,
+    NULL AS first_option_initial_zip_code,
+    NULL AS first_option_final_zip_code,
+    NULL AS first_option_delivery_time,
+    NULL AS first_option_price,
+    NULL AS first_option_state,
+    NULL AS first_option_city,
+    changed_by_quotation,
+    current_shipping_company_had_changed,
+    CASE WHEN shipping_company_in_plan IS NULL THEN FALSE ELSE TRUE END AS is_quotation_shipping_company
+
+  FROM `simulador_de_cotacao.prepation_freight_simulator_existing_company`
+  LEFT JOIN is_quotation_shipping_company
+  ON current_shipping_company = shipping_company_in_plan
+
+  WHERE (current_shipping_company != quotation_shipping_company)
+  OR (current_shipping_company NOT IN (SELECT DISTINCT quotation_shipping_company FROM `simulador_de_cotacao.prepation_freight_simulator_existing_company` WHERE quotation_shipping_company IS NOT NULL)
+    AND quotation_shipping_company IS NULL)
+  OR (current_shipping_company = quotation_shipping_company AND current_price >= quotation_price)
+  -- unindo com as informações de entrega dos casos que não precisaram de tratamento
+)
+
+SELECT *
+FROM union_bases
+QUALIFY ROW_NUMBER() OVER(PARTITION BY kit_id ORDER BY quotation_price, first_option_price) = 1
